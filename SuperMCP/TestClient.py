@@ -13,17 +13,17 @@ async def main():
             servers = await s.call_tool("list_servers", {})
             print("Servers:", servers.structuredContent or servers.content)
 
-            # If hello_server.py exists, inspect and call it:
-            result = await s.call_tool("inspect_server", {"name": "hello_server"})
+            # If conversation_server.py exists, inspect and call it:
+            result = await s.call_tool("inspect_server", {"name": "conversation_server"})
             print("Inspect:", result.structuredContent or result.content)
 
             # Call a known tool on the hello server
             call = await s.call_tool("call_server_tool", {
-                "name": "hello_server",
-                "tool_name": "say_hello",
-                "arguments": {"name": "Yakup"}
+                "name": "conversation_server",
+                "tool_name": "get_password",
+                "arguments": {"name": "Claude", "model": "A"}
             })
-            print("say_hello ->", call.structuredContent or call.content)
+            print("get_password ->", call.structuredContent or call.content)
 
 if __name__ == "__main__":
     asyncio.run(main())

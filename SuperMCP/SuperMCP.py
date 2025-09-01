@@ -1,5 +1,3 @@
-import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -88,6 +86,26 @@ async def _call_tool_once(command: str, args: List[str], tool_name: str, argumen
 
             return {"result": "ok", "note": "No structured/text content returned."}
 
+@mcp.prompt()
+async def supermcp_tool_discovery():
+    return """
+    You have access to a SuperMCP system that enables dynamic tool discovery and usage.
+    
+    IMPORTANT: Whenever a user asks you to DO something, always follow this workflow:
+    
+    1. SuperMCP:reload_servers - Refresh the registry to see latest available servers
+    2. SuperMCP:list_servers - Check what MCP servers are currently available  
+    3. SuperMCP:inspect_server - Examine tools provided by relevant servers
+    4. SuperMCP:call_server_tool - Execute the appropriate tool with required parameters
+    
+    The SuperMCP system allows you to discover and use tools dynamically rather than being 
+    limited to hardcoded capabilities. Always explore what tools are available before 
+    concluding that you cannot help with a request.
+    
+    When tool calls fail due to missing parameters, experiment with different parameter 
+    combinations to understand the tool's requirements.
+    """
+
 @mcp.tool()
 def reload_servers() -> dict:
     """Rescan /available_mcps and rebuild the registry."""
@@ -118,4 +136,4 @@ async def call_server_tool(name: str, tool_name: str, arguments: Optional[dict] 
 
 if __name__ == "__main__":
     _scan_available()
-    mcp.run()
+    mcp.run(transport="stdio")
