@@ -9,7 +9,7 @@ SuperMCP acts as a central hub that manages multiple MCP servers, allowing AI as
 ## Core Features
 
 ### Dynamic Server Management
-- **Auto-discovery**: Automatically detects MCP servers in the `available_mcps` folder
+- **Auto-discovery**: Automatically detects MCP servers in the `available_mcps` folder (There is already "conversation_server.py" available in the folder as an example. Can be deleted, if you don't want to use it)
 - **Runtime inspection**: Examine available tools, prompts, and resources from any server
 - **Hot reloading**: Add new servers without restarting the system
 - **Unified interface**: Access all servers through consistent SuperMCP commands
@@ -196,3 +196,4 @@ SuperMCP thrives on community contributions. Whether you're building new MCP ser
 ---
 
 *SuperMCP: Unleashing the full potential of AI through dynamic capability expansion.*
+
