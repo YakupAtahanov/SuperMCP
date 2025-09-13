@@ -17,9 +17,7 @@ REGISTRY: Dict[str, Dict[str, Any]] = {}
 def _is_server_file(p: Path) -> bool:
     return (
         p.is_file()
-        and p.suffix == ".py"
-        and p.name != "__init__.py"
-        and not p.name.startswith("_")
+        and p.name == "server.py"
     )
 
 def _python_cmd() -> str:
@@ -27,14 +25,15 @@ def _python_cmd() -> str:
     return sys.executable or "python"
 
 def _derive_name(p: Path) -> str:
-    # use filename (without .py) as the server name
-    return p.stem
+    # use parent directory name as the server name
+    return p.parent.name
 
 def _scan_available():
     REGISTRY.clear()
     if not MCPS_DIR.exists():
         MCPS_DIR.mkdir(parents=True, exist_ok=True)
-    for f in sorted(MCPS_DIR.glob("*.py")):
+    # Recursively find all server.py files in subdirectories
+    for f in sorted(MCPS_DIR.rglob("server.py")):
         if _is_server_file(f):
             name = _derive_name(f)
             # Launch via stdio: python <script>

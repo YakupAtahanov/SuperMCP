@@ -8,22 +8,25 @@ async def main():
         async with ClientSession(read, write) as s:
             await s.initialize()
 
+            print("=== SuperMCP Test Client ===")
             print("Reloading and listing servers...")
             await s.call_tool("reload_servers", {})
             servers = await s.call_tool("list_servers", {})
-            print("Servers:", servers.structuredContent or servers.content)
+            print("Available servers:", servers.structuredContent or servers.content)
 
-            # If conversation_server.py exists, inspect and call it:
-            result = await s.call_tool("inspect_server", {"name": "conversation_server"})
-            print("Inspect:", result.structuredContent or result.content)
+            # Test with ShellMCP (the actual available server)
+            print("\n=== Testing ShellMCP Server ===")
+            result = await s.call_tool("inspect_server", {"name": "ShellMCP"})
+            print("ShellMCP capabilities:", result.structuredContent or result.content)
 
-            # Call a known tool on the hello server
+            # Call a ShellMCP tool to get platform info
+            print("\n=== Calling ShellMCP get_platform_info ===")
             call = await s.call_tool("call_server_tool", {
-                "name": "conversation_server",
-                "tool_name": "get_password",
-                "arguments": {"name": "Claude", "model": "A"}
+                "name": "ShellMCP",
+                "tool_name": "get_platform_info",
+                "arguments": {}
             })
-            print("get_password ->", call.structuredContent or call.content)
+            print("Platform info result:", call.structuredContent or call.content)
 
 if __name__ == "__main__":
     asyncio.run(main())

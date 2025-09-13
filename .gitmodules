@@ -1,0 +1,4 @@
+[submodule "available_mcps/ShellMCP"]
+	path = available_mcps/ShellMCP
+	url = git@github.com:YakupAtahanov/super-shell-mcp.git
+	branch = feature/Python-SDK
