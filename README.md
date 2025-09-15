@@ -20,19 +20,32 @@ SuperMCP acts as a central hub that manages multiple MCP servers, allowing AI as
 - `call_server_tool` - Execute tools from any available server
 - `reload_servers` - Refresh the server registry for newly added servers
 
-## Current Architecture
+## Architecture
 
 ```
-AI Assistant
-     ↓
-  SuperMCP (Orchestrator)
-     ↓
-Multiple MCP Servers
-├── conversation_server
-├── email_server (future)
-├── database_server (future)
-└── ... (extensible)
+┌─────────────────────────────────────────────────────────────────┐
+│                        SuperMCP                                │
+│                   (Orchestration Layer)                        │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Available MCPs                              │
+│                                                                 │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐ │
+│  │  ShellMCP   │  │CodeAnalysis │  │FileSystem   │  │ EchoMCP │ │
+│  │             │  │    MCP      │  │    MCP      │  │         │ │
+│  │ • Terminal  │  │ • Code      │  │ • File      │  │ • Test  │ │
+│  │   Commands  │  │   Analysis  │  │   Ops       │  │ • Echo  │ │
+│  │ • Package   │  │ • File      │  │ • Directory │  │ • Valid │ │
+│  │   Install   │  │   Reading   │  │   Mgmt      │  │ • Temp  │ │
+│  │ • Security  │  │ • Structure │  │ • Cross-    │  │         │ │
+│  │   Controls  │  │   Analysis  │  │   Platform  │  │         │ │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘ │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Potential Use Cases
 
