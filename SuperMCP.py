@@ -8,13 +8,20 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Configure logging
+# Note: MCP servers use stdio protocol - stderr logging MUST be minimal/disabled
+# to avoid corrupting protocol messages. Log only to file by default.
+import os
+log_file_path = os.path.join(os.path.dirname(__file__), 'supermcp.log')
+
+# Only log to file, never to stderr (unless debugging)
+log_handlers = [logging.FileHandler(log_file_path)]
+if os.environ.get('SUPERMCP_DEBUG'):
+    log_handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,  # Only warnings and errors, not info
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('supermcp.log'),
-        logging.StreamHandler()
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger("SuperMCP")
 
