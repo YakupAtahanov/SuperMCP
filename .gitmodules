@@ -1,7 +1,2 @@
-[submodule "available_mcps/ShellMCP"]
-	path = available_mcps/ShellMCP
-	url = git@github.com:YakupAtahanov/super-shell-mcp.git
-	branch = feature/Python-SDK
-[submodule "available_mcps/FileSystemMCP"]
-	path = available_mcps/FileSystemMCP
-	url = git@github.com:YakupAtahanov/file-system-mcp-server.git
+# Submodules removed - servers are now managed via mcp.json
+# ShellMCP and FileSystemMCP are now regular directories in .mcps/

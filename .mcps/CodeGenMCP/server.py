@@ -25,8 +25,9 @@ mcp = FastMCP("CodeGenMCP")
 # Use the same model as the main JARVIS system
 LLM_MODEL = os.getenv("LLM_MODEL") or "qwen2.5-coder:32b"
 
-# Get the SuperMCP directory
-SUPERMCP_DIR = Path(__file__).parent.parent
+# Get the .mcps directory (where servers are stored)
+MCPS_DIR = Path(__file__).parent.parent  # Points to .mcps/
+SUPERMCP_DIR = MCPS_DIR.parent  # Points to SuperMCP/
 
 # MCP Server Template
 MCP_SERVER_TEMPLATE = '''#!/usr/bin/env python3
@@ -60,8 +61,9 @@ def create_mcp_server(
     This tool:
     1. Reads the EchoMCP template as reference
     2. Calls local Ollama to generate FastMCP tools
-    3. Writes the complete server to available_mcps/<server_name>/server.py
-    4. Returns the path and preview
+    3. Writes the complete server to .mcps/<server_name>/server.py
+    4. Adds entry to mcp.json automatically
+    5. Returns the path and preview
     
     Example:
     create_mcp_server(
@@ -72,7 +74,7 @@ def create_mcp_server(
     """
     try:
         # Read EchoMCP as a template reference
-        echo_path = SUPERMCP_DIR / "EchoMCP" / "server.py"
+        echo_path = MCPS_DIR / "EchoMCP" / "server.py"
         if echo_path.exists():
             template_code = echo_path.read_text()
         else:
@@ -134,7 +136,7 @@ Generate the Python code for the tools now:"""
         )
         
         # Create directory and write file
-        server_dir = SUPERMCP_DIR / server_name
+        server_dir = MCPS_DIR / server_name
         server_dir.mkdir(exist_ok=True)
         
         server_file = server_dir / "server.py"
@@ -145,7 +147,40 @@ Generate the Python code for the tools now:"""
         if not reqs_file.exists():
             reqs_file.write_text("# Add your dependencies here\n", encoding='utf-8')
         
-        return {
+        # Add entry to mcp.json
+        mcp_json_path = SUPERMCP_DIR / "mcp.json"
+        try:
+            import json
+            if mcp_json_path.exists():
+                with open(mcp_json_path, 'r') as f:
+                    config = json.load(f)
+            else:
+                config = {"mcpServers": {}}
+            
+            # Calculate relative path for args
+            server_rel_path = f".mcps/{server_name}/server.py"
+            
+            # Add server entry
+            config["mcpServers"][server_name] = {
+                "command": "python",
+                "args": [server_rel_path],
+                "type": "stdio",
+                "description": description,
+                "enabled": True
+            }
+            
+            # Save atomically
+            temp_path = mcp_json_path.with_suffix('.json.tmp')
+            with open(temp_path, 'w') as f:
+                json.dump(config, f, indent=2)
+            temp_path.replace(mcp_json_path)
+            
+            mcp_json_added = True
+        except Exception as e:
+            mcp_json_added = False
+            mcp_json_error = str(e)
+        
+        result = {
             "success": True,
             "message": f"Created {server_name} successfully!",
             "server_path": str(server_file),
@@ -157,6 +192,13 @@ Generate the Python code for the tools now:"""
                 f"4. Inspect: inspect_server({server_name})"
             ]
         }
+        
+        if mcp_json_added:
+            result["mcp_json"] = "Entry added to mcp.json automatically"
+        else:
+            result["mcp_json_warning"] = f"Could not add to mcp.json: {mcp_json_error}. Please add manually."
+        
+        return result
         
     except Exception as e:
         return {
@@ -226,7 +268,7 @@ def list_available_templates() -> Dict[str, Any]:
     """
     try:
         templates = []
-        for item in SUPERMCP_DIR.iterdir():
+        for item in MCPS_DIR.iterdir():
             if item.is_dir() and (item / "server.py").exists():
                 templates.append({
                     "name": item.name,
@@ -247,6 +289,7 @@ def list_available_templates() -> Dict[str, Any]:
 if __name__ == "__main__":
     print(f"CodeGenMCP Server starting...")
     print(f"Using Model: {LLM_MODEL}")
+    print(f"MCPS Directory: {MCPS_DIR}")
     print(f"SuperMCP Directory: {SUPERMCP_DIR}")
     mcp.run()
 

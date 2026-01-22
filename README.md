@@ -9,16 +9,22 @@ SuperMCP acts as a central hub that manages multiple MCP servers, allowing AI as
 ## Core Features
 
 ### Dynamic Server Management
-- **Auto-discovery**: Automatically detects MCP servers in the `available_mcps` folder (There is already "conversation_server.py" available in the folder as an example. Can be deleted, if you don't want to use it)
+- **JSON Configuration**: Centralized `mcp.json` file for server management (similar to Cursor's approach)
+- **Dual Transport Support**: Supports both SSE (Server-Sent Events) remote servers and stdio local servers
 - **Runtime inspection**: Examine available tools, prompts, and resources from any server
 - **Hot reloading**: Add new servers without restarting the system
+- **AI-Driven Management**: AI can add, remove, and update servers dynamically
+- **Git Integration**: Clone and manage Git-based MCP servers automatically
 - **Unified interface**: Access all servers through consistent SuperMCP commands
 
 ### Available Commands
-- `list_servers` - View all detected MCP servers
+- `list_servers` - View all configured MCP servers from mcp.json
 - `inspect_server` - Get detailed information about a server's capabilities
 - `call_server_tool` - Execute tools from any available server
-- `reload_servers` - Refresh the server registry for newly added servers
+- `reload_servers` - Reload servers from mcp.json
+- `add_server` - Add a new server (SSE or stdio) to the configuration
+- `remove_server` - Remove a server from the configuration
+- `update_server` - Update a server's configuration
 
 ## Architecture
 
@@ -198,9 +204,71 @@ For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 1. Clone the SuperMCP repository
 2. Set up your Python environment
-3. Add MCP servers to the `available_mcps` folder
+3. Configure servers in `mcp.json` (see Configuration section below)
 4. Use `list_servers` to verify server detection
 5. Start building with `inspect_server` and `call_server_tool`
+
+## Configuration
+
+SuperMCP uses `mcp.json` for server configuration, similar to Cursor's MCP server management.
+
+### Server Types
+
+**SSE Servers** (Remote):
+```json
+{
+  "mcpServers": {
+    "remote-server": {
+      "url": "http://example.com:8000/sse",
+      "type": "sse",
+      "description": "Remote SSE server",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Stdio Servers** (Local):
+```json
+{
+  "mcpServers": {
+    "local-server": {
+      "command": "python",
+      "args": [".mcps/ShellMCP/server.py"],
+      "type": "stdio",
+      "description": "Local stdio server",
+      "enabled": true
+    }
+  }
+}
+```
+
+**Git-based Stdio Servers**:
+```json
+{
+  "mcpServers": {
+    "git-server": {
+      "command": "python",
+      "args": [".mcps/remote/weather-mcp/server.py"],
+      "type": "stdio",
+      "url": "https://github.com/user/weather-mcp.git",
+      "description": "Git-based server (cloned locally, runs as stdio)",
+      "enabled": true
+    }
+  }
+}
+```
+
+### Adding Servers
+
+You can add servers manually by editing `mcp.json`, or use the AI tools:
+- `add_server(name, server_type, url, command, args, description)` - Add a new server
+- `remove_server(name)` - Remove a server
+- `update_server(name, **kwargs)` - Update server configuration
+
+### Migration from Directory Scanning
+
+If you have existing servers in the `.mcps` directory, you'll need to manually add them to `mcp.json`. The system no longer auto-discovers servers from the directory structure.
 
 ## Contributing
 
