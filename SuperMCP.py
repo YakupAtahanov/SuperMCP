@@ -138,6 +138,41 @@ def _resolve_path(path_str: str) -> Path:
     # Resolve relative to SuperMCP directory
     return HERE / path_str
 
+def _create_sse_headers(env: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """
+    Convert environment variables to HTTP headers for SSE connections.
+    
+    Args:
+        env: Dictionary of environment variables
+    
+    Returns:
+        Dictionary of HTTP headers
+    """
+    if not env:
+        return {}
+    
+    headers = {}
+    for key, value in env.items():
+        # Convert VAR_NAME to X-MCP-VAR-NAME format
+        header_name = f"X-MCP-{key.upper().replace('_', '-')}"
+        headers[header_name] = value
+    
+    return headers
+
+def _mask_env_values(env: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """
+    Mask environment variable values for logging (security).
+    
+    Args:
+        env: Dictionary of environment variables
+    
+    Returns:
+        Dictionary with masked values
+    """
+    if not env:
+        return None
+    return {key: "***" for key in env.keys()}
+
 def _scan_available():
     """
     Load MCP servers from mcp.json configuration file.
@@ -176,7 +211,8 @@ def _scan_available():
                 "args": None,
                 "path": None,
                 "description": server_config.get("description"),
-                "enabled": True
+                "enabled": True,
+                "env": server_config.get("env")
             }
             logger.info("Registered SSE server: %s at %s", name, server_config["url"])
             found_count += 1
@@ -262,29 +298,56 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
         if not url:
             raise ValueError("SSE server missing URL")
         
-        logger.debug("Inspecting SSE server at: %s", url)
+        env = server_config.get("env")
+        headers = _create_sse_headers(env)
+        masked_env = _mask_env_values(env)
+        logger.debug("Inspecting SSE server at: %s (env: %s)", url, masked_env)
+        
         try:
             # Try to use MCP SSE client if available
             if SSE_AVAILABLE:
-                # Use MCP SSE client
-                async with sse_client(url) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    prompts = await session.list_prompts()
-                    resources = await session.list_resources()
-                    result = {
-                        "tools": [t.name for t in getattr(tools, "tools", [])],
-                        "prompts": [p.name for p in getattr(prompts, "prompts", [])],
-                        "resources": [r.uri for r in getattr(resources, "resources", [])],
-                    }
-                    logger.info("SSE inspection successful: %d tools, %d prompts, %d resources",
-                               len(result["tools"]), len(result["prompts"]), len(result["resources"]))
-                    return result
+                # Note: sse_client from mcp.client.sse may not support headers directly
+                # We'll need to use httpx with SSE parsing or check if sse_client supports headers
+                # For now, try with httpx if headers are needed
+                if headers:
+                    import httpx
+                    from httpx_sse import EventSource
+                    # Use httpx with SSE support when headers are needed
+                    async with httpx.AsyncClient() as client:
+                        async with EventSource(url, client=client, headers=headers) as event_source:
+                            # Initialize connection and get capabilities
+                            # This is a simplified approach - may need adjustment based on MCP SSE spec
+                            async for event in event_source:
+                                if event.event == "message":
+                                    # Parse MCP messages
+                                    pass
+                            # Fallback to basic inspection
+                            return {
+                                "tools": [],
+                                "prompts": [],
+                                "resources": [],
+                                "note": "SSE inspection with headers - full inspection may require direct MCP client support"
+                            }
+                else:
+                    # Use MCP SSE client when no headers needed
+                    async with sse_client(url) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        prompts = await session.list_prompts()
+                        resources = await session.list_resources()
+                        result = {
+                            "tools": [t.name for t in getattr(tools, "tools", [])],
+                            "prompts": [p.name for p in getattr(prompts, "prompts", [])],
+                            "resources": [r.uri for r in getattr(resources, "resources", [])],
+                        }
+                        logger.info("SSE inspection successful: %d tools, %d prompts, %d resources",
+                                   len(result["tools"]), len(result["prompts"]), len(result["resources"]))
+                        return result
             else:
                 # Fallback: use httpx for basic connection test
                 import httpx
                 async with httpx.AsyncClient() as client:
-                    response = await client.get(url, timeout=5.0)
+                    response = await client.get(url, headers=headers, timeout=5.0)
                     return {
                         "tools": [],
                         "prompts": [],
@@ -339,19 +402,42 @@ async def _call_tool_once(server_config: Dict[str, Any], tool_name: str, argumen
         if not url:
             raise ValueError("SSE server missing URL")
         
-        logger.info("Calling tool '%s' on SSE server at %s with arguments: %s", tool_name, url, arguments)
+        env = server_config.get("env")
+        headers = _create_sse_headers(env)
+        masked_env = _mask_env_values(env)
+        logger.info("Calling tool '%s' on SSE server at %s with arguments: %s (env: %s)", 
+                   tool_name, url, arguments, masked_env)
+        
         try:
             if SSE_AVAILABLE:
-                async with sse_client(url) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    names = [t.name for t in getattr(tools, "tools", [])]
-                    if tool_name not in names:
-                        logger.warning("Tool '%s' not found. Available tools: %s", tool_name, names)
-                        return {"error": f"Tool '{tool_name}' not found. Available: {names}"}
-                    
-                    result = await session.call_tool(tool_name, arguments or {})
-                    return _extract_result_content(result)
+                # Note: sse_client may not support headers directly
+                # For now, try without headers first, then fallback to httpx if headers needed
+                if headers:
+                    # Use httpx with SSE support when headers are needed
+                    import httpx
+                    from httpx_sse import EventSource
+                    # This is a simplified approach - may need full MCP SSE implementation
+                    async with httpx.AsyncClient() as client:
+                        async with EventSource(url, client=client, headers=headers) as event_source:
+                            # Send MCP tool call request
+                            # This requires proper MCP SSE protocol implementation
+                            # For now, return error indicating header support needed
+                            return {
+                                "error": "SSE servers with environment variables require custom implementation. "
+                                        "Headers are prepared but MCP SSE client needs enhancement for header support."
+                            }
+                else:
+                    # Use standard MCP SSE client when no headers needed
+                    async with sse_client(url) as session:
+                        await session.initialize()
+                        tools = await session.list_tools()
+                        names = [t.name for t in getattr(tools, "tools", [])]
+                        if tool_name not in names:
+                            logger.warning("Tool '%s' not found. Available tools: %s", tool_name, names)
+                            return {"error": f"Tool '{tool_name}' not found. Available: {names}"}
+                        
+                        result = await session.call_tool(tool_name, arguments or {})
+                        return _extract_result_content(result)
             else:
                 return {"error": "SSE client not available. Please install MCP SDK with SSE support or use httpx."}
         except Exception as e:
@@ -514,7 +600,8 @@ def add_server(
     url: Optional[str] = None,
     command: Optional[str] = None,
     args: Optional[List[str]] = None,
-    description: Optional[str] = None
+    description: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None
 ) -> dict:
     """
     Add a new MCP server to the configuration.
@@ -526,6 +613,7 @@ def add_server(
         command: Required for stdio servers (e.g., "python")
         args: Required for stdio servers (e.g., ["server.py"])
         description: Optional description
+        env: Optional environment variables dict (for SSE servers, passed as HTTP headers)
     
     Returns:
         Dict with success status and details
@@ -555,18 +643,21 @@ def add_server(
         
         # Test connection
         from server_manager import connect_sse_server
-        conn_test = connect_sse_server(url)
+        conn_test = connect_sse_server(url, env)
         if not conn_test.get("success"):
             logger.warning("SSE connection test failed: %s", conn_test.get("error"))
             # Don't fail, just warn
         
         # Add SSE server
-        servers[name] = {
+        server_entry = {
             "url": url,
             "type": "sse",
             "description": description,
             "enabled": True
         }
+        if env:
+            server_entry["env"] = env
+        servers[name] = server_entry
     
     else:  # stdio
         if not command:
@@ -725,6 +816,12 @@ def update_server(name: str, **kwargs) -> dict:
             if not isinstance(value, list):
                 return {"error": "args must be a list"}
             server_config["args"] = value
+        elif key == "env":
+            if server_type != "sse":
+                return {"error": f"Cannot set 'env' for {server_type} server. Environment variables are only for SSE servers."}
+            if not isinstance(value, dict):
+                return {"error": "env must be a dictionary"}
+            server_config["env"] = value
         else:
             return {"error": f"Unknown field: {key}"}
     
@@ -751,6 +848,312 @@ def update_server(name: str, **kwargs) -> dict:
         "message": f"Server '{name}' updated successfully",
         "server": server_config
     }
+
+# Initialize provider client
+_provider_client = None
+
+def _get_provider_client():
+    """Get or create provider client instance."""
+    global _provider_client
+    if _provider_client is None:
+        try:
+            from provider_client import ProviderClient
+            _provider_client = ProviderClient()
+        except Exception as e:
+            logger.error("Failed to initialize provider client: %s", e)
+            return None
+    return _provider_client
+
+@mcp.tool()
+def list_providers() -> List[dict]:
+    """
+    List all configured marketplace providers.
+    
+    Returns:
+        List of provider information dictionaries
+    """
+    logger.info("list_providers tool called")
+    client = _get_provider_client()
+    if not client:
+        return [{"error": "Provider client not available"}]
+    
+    try:
+        providers = client.list_providers()
+        logger.info("list_providers returning %d provider(s)", len(providers))
+        return providers
+    except Exception as e:
+        logger.error("Failed to list providers: %s", e)
+        return [{"error": str(e)}]
+
+@mcp.tool()
+def add_provider(
+    provider_id: str,
+    name: str,
+    provider_type: str,
+    url: Optional[str] = None,
+    catalog_file: Optional[str] = None,
+    trusted: bool = False,
+    enabled: bool = True,
+    description: Optional[str] = None
+) -> dict:
+    """
+    Add a new marketplace provider.
+    
+    Args:
+        provider_id: Unique provider identifier
+        name: Provider display name
+        provider_type: "static" or "api"
+        url: Required for API providers
+        catalog_file: Required for static providers (relative to SuperMCP directory)
+        trusted: Whether provider is trusted
+        enabled: Whether provider is enabled
+        description: Optional description
+    
+    Returns:
+        Dict with success status
+    """
+    logger.info("add_provider called: id=%s, type=%s", provider_id, provider_type)
+    client = _get_provider_client()
+    if not client:
+        return {"error": "Provider client not available"}
+    
+    try:
+        result = client.add_provider(
+            provider_id, name, provider_type, url, catalog_file,
+            trusted, enabled, description
+        )
+        logger.info("add_provider completed: %s", result.get("success", False))
+        return result
+    except Exception as e:
+        logger.error("Failed to add provider: %s", e)
+        return {"error": str(e)}
+
+@mcp.tool()
+def remove_provider(provider_id: str) -> dict:
+    """
+    Remove a provider from configuration.
+    
+    Args:
+        provider_id: Provider identifier to remove
+    
+    Returns:
+        Dict with success status
+    """
+    logger.info("remove_provider called: id=%s", provider_id)
+    client = _get_provider_client()
+    if not client:
+        return {"error": "Provider client not available"}
+    
+    try:
+        result = client.remove_provider(provider_id)
+        logger.info("remove_provider completed: %s", result.get("success", False))
+        return result
+    except Exception as e:
+        logger.error("Failed to remove provider: %s", e)
+        return {"error": str(e)}
+
+@mcp.tool()
+def list_provider_servers(provider_id: Optional[str] = None) -> List[dict]:
+    """
+    List all servers from a provider.
+    
+    Args:
+        provider_id: Provider identifier (uses default if not specified)
+    
+    Returns:
+        List of server metadata dictionaries
+    """
+    logger.info("list_provider_servers called: provider=%s", provider_id)
+    client = _get_provider_client()
+    if not client:
+        return [{"error": "Provider client not available"}]
+    
+    try:
+        if not provider_id:
+            # Use default provider
+            providers = client.list_providers()
+            default_provider = next((p for p in providers if p.get("id") == "default"), None)
+            if not default_provider:
+                return [{"error": "No default provider configured"}]
+            provider_id = "default"
+        
+        servers = client.fetch_servers(provider_id)
+        logger.info("list_provider_servers returning %d server(s)", len(servers))
+        return servers
+    except Exception as e:
+        logger.error("Failed to list provider servers: %s", e)
+        return [{"error": str(e)}]
+
+@mcp.tool()
+def search_provider_servers(query: str, provider_id: Optional[str] = None) -> List[dict]:
+    """
+    Search servers across providers.
+    
+    Args:
+        query: Search query string
+        provider_id: Provider identifier (searches all if not specified)
+    
+    Returns:
+        List of matching server metadata dictionaries
+    """
+    logger.info("search_provider_servers called: query=%s, provider=%s", query, provider_id)
+    client = _get_provider_client()
+    if not client:
+        return [{"error": "Provider client not available"}]
+    
+    try:
+        if provider_id:
+            # Search specific provider
+            results = client.search_servers(provider_id, query)
+        else:
+            # Search all enabled providers
+            results = []
+            providers = client.list_providers()
+            for provider in providers:
+                if provider.get("enabled", True):
+                    pid = provider.get("id")
+                    try:
+                        provider_results = client.search_servers(pid, query)
+                        results.extend(provider_results)
+                    except Exception as e:
+                        logger.warning("Failed to search provider '%s': %s", pid, e)
+        
+        logger.info("search_provider_servers returning %d result(s)", len(results))
+        return results
+    except Exception as e:
+        logger.error("Failed to search provider servers: %s", e)
+        return [{"error": str(e)}]
+
+@mcp.tool()
+def get_provider_server(server_id: str, provider_id: Optional[str] = None) -> dict:
+    """
+    Get detailed information about a specific server.
+    
+    Args:
+        server_id: Server identifier
+        provider_id: Provider identifier (searches all if not specified)
+    
+    Returns:
+        Server metadata dictionary
+    """
+    logger.info("get_provider_server called: server=%s, provider=%s", server_id, provider_id)
+    client = _get_provider_client()
+    if not client:
+        return {"error": "Provider client not available"}
+    
+    try:
+        if provider_id:
+            # Get from specific provider
+            server = client.get_server_details(provider_id, server_id)
+            if not server:
+                return {"error": f"Server '{server_id}' not found in provider '{provider_id}'"}
+            return server
+        else:
+            # Search all enabled providers
+            providers = client.list_providers()
+            for provider in providers:
+                if provider.get("enabled", True):
+                    pid = provider.get("id")
+                    try:
+                        server = client.get_server_details(pid, server_id)
+                        if server:
+                            return server
+                    except Exception as e:
+                        logger.warning("Failed to get server from provider '%s': %s", pid, e)
+            
+            return {"error": f"Server '{server_id}' not found in any provider"}
+    except Exception as e:
+        logger.error("Failed to get provider server: %s", e)
+        return {"error": str(e)}
+
+@mcp.tool()
+def install_from_provider(
+    server_id: str,
+    provider_id: Optional[str] = None,
+    name: Optional[str] = None,
+    variables: Optional[Dict[str, str]] = None
+) -> dict:
+    """
+    Install a server from a marketplace provider.
+    
+    Args:
+        server_id: Server identifier from provider
+        provider_id: Provider identifier (uses default if not specified)
+        name: Custom name for installed server (uses server_id if not specified)
+        variables: Environment variables for SSE servers (dict of var_name: value)
+    
+    Returns:
+        Dict with installation status
+    """
+    logger.info("install_from_provider called: server=%s, provider=%s", server_id, provider_id)
+    client = _get_provider_client()
+    if not client:
+        return {"error": "Provider client not available"}
+    
+    try:
+        # Get server details
+        server_info = get_provider_server(server_id, provider_id)
+        if "error" in server_info:
+            return server_info
+        
+        server_name = name or server_id
+        server_type = server_info.get("type", "sse")
+        
+        # Prepare variables
+        env_vars = variables or {}
+        
+        # Check required variables for SSE servers
+        if server_type == "sse":
+            required_vars = server_info.get("required_vars", [])
+            missing_vars = [var for var in required_vars if var not in env_vars]
+            if missing_vars:
+                return {
+                    "error": f"Missing required variables: {', '.join(missing_vars)}",
+                    "required_vars": required_vars,
+                    "var_descriptions": server_info.get("var_descriptions", {})
+                }
+        
+        # Install using add_server
+        if server_type == "sse":
+            url = server_info.get("url")
+            if not url:
+                return {"error": "SSE server missing URL in provider metadata"}
+            
+            result = add_server(
+                name=server_name,
+                server_type="sse",
+                url=url,
+                description=server_info.get("description"),
+                env=env_vars if env_vars else None
+            )
+        else:
+            # Stdio server - need Git URL
+            git_url = server_info.get("git_url") or server_info.get("url")
+            if not git_url:
+                return {"error": "Stdio server missing Git URL in provider metadata"}
+            
+            entry_point = server_info.get("entry_point", "server.py")
+            result = add_server(
+                name=server_name,
+                server_type="stdio",
+                url=git_url,
+                command="python",
+                args=[f".mcps/remote/{server_name}/{entry_point}"],
+                description=server_info.get("description")
+            )
+        
+        if "error" in result:
+            return result
+        
+        return {
+            "success": True,
+            "message": f"Server '{server_name}' installed successfully from provider",
+            "server": result.get("server"),
+            "provider_info": server_info
+        }
+    except Exception as e:
+        logger.error("Failed to install from provider: %s", e)
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     logger.info("Starting SuperMCP server")

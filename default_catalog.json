@@ -1,0 +1,19 @@
+{
+  "servers": [
+    {
+      "id": "deepwiki",
+      "name": "DeepWiki",
+      "description": "Documentation access via MCP - browse GitHub repository documentation",
+      "type": "sse",
+      "url": "https://api.deepwiki.com/mcp/sse",
+      "required_vars": ["API_KEY", "REPO_NAME"],
+      "optional_vars": [],
+      "var_descriptions": {
+        "API_KEY": "Your DeepWiki API key for authentication",
+        "REPO_NAME": "GitHub repository in format owner/repo (e.g., facebook/react)"
+      },
+      "category": "documentation",
+      "version": "1.0.0"
+    }
+  ]
+}

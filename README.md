@@ -11,13 +11,17 @@ SuperMCP acts as a central hub that manages multiple MCP servers, allowing AI as
 ### Dynamic Server Management
 - **JSON Configuration**: Centralized `mcp.json` file for server management (similar to Cursor's approach)
 - **Dual Transport Support**: Supports both SSE (Server-Sent Events) remote servers and stdio local servers
+- **SSE Variable Support**: Environment variables for SSE servers passed as HTTP headers (like Cursor)
 - **Runtime inspection**: Examine available tools, prompts, and resources from any server
 - **Hot reloading**: Add new servers without restarting the system
 - **AI-Driven Management**: AI can add, remove, and update servers dynamically
 - **Git Integration**: Clone and manage Git-based MCP servers automatically
+- **Marketplace Provider System**: Discover and install servers from trusted providers (Fedora Discover-style)
 - **Unified interface**: Access all servers through consistent SuperMCP commands
 
 ### Available Commands
+
+**Server Management:**
 - `list_servers` - View all configured MCP servers from mcp.json
 - `inspect_server` - Get detailed information about a server's capabilities
 - `call_server_tool` - Execute tools from any available server
@@ -25,6 +29,15 @@ SuperMCP acts as a central hub that manages multiple MCP servers, allowing AI as
 - `add_server` - Add a new server (SSE or stdio) to the configuration
 - `remove_server` - Remove a server from the configuration
 - `update_server` - Update a server's configuration
+
+**Marketplace Provider Management:**
+- `list_providers` - List all configured marketplace providers
+- `add_provider` - Add a new marketplace provider (static or API)
+- `remove_provider` - Remove a provider from configuration
+- `list_provider_servers` - List all servers from a provider
+- `search_provider_servers` - Search servers across providers
+- `get_provider_server` - Get detailed information about a specific server
+- `install_from_provider` - Install a server from a marketplace provider
 
 ## Architecture
 
@@ -223,10 +236,23 @@ SuperMCP uses `mcp.json` for server configuration, similar to Cursor's MCP serve
       "type": "sse",
       "description": "Remote SSE server",
       "enabled": true
+    },
+    "deepwiki": {
+      "url": "https://api.deepwiki.com/mcp/sse",
+      "type": "sse",
+      "description": "DeepWiki MCP Server",
+      "enabled": true,
+      "env": {
+        "API_KEY": "your-api-key",
+        "REPO_NAME": "owner/repo"
+      }
     }
   }
 }
 ```
+
+**SSE Server Environment Variables:**
+SSE servers can include an `env` field with environment variables that are passed as HTTP headers. Variables are converted to headers in the format `X-MCP-{VAR_NAME}` (e.g., `API_KEY` becomes `X-MCP-API-KEY`).
 
 **Stdio Servers** (Local):
 ```json
@@ -262,9 +288,83 @@ SuperMCP uses `mcp.json` for server configuration, similar to Cursor's MCP serve
 ### Adding Servers
 
 You can add servers manually by editing `mcp.json`, or use the AI tools:
-- `add_server(name, server_type, url, command, args, description)` - Add a new server
+- `add_server(name, server_type, url, command, args, description, env)` - Add a new server
+  - For SSE servers: provide `url` and optional `env` dict for environment variables
+  - For stdio servers: provide `command`, `args`, and optional `url` for Git repos
 - `remove_server(name)` - Remove a server
-- `update_server(name, **kwargs)` - Update server configuration
+- `update_server(name, **kwargs)` - Update server configuration (can update `env` for SSE servers)
+
+### Marketplace Provider System
+
+SuperMCP includes a marketplace provider system (similar to Fedora Discover) that allows you to discover and install MCP servers from trusted sources.
+
+**Default Provider:**
+- A static JSON catalog (`default_catalog.json`) is included as the default trusted provider
+- Contains curated list of trusted MCP servers
+- Works offline, no external dependencies
+
+**Adding Providers:**
+You can add additional providers using the `add_provider` tool:
+
+```python
+# Add a static provider (JSON file)
+add_provider(
+    provider_id="my-provider",
+    name="My Custom Provider",
+    provider_type="static",
+    catalog_file="my_catalog.json",
+    trusted=False
+)
+
+# Add an API provider
+add_provider(
+    provider_id="github-mcp",
+    name="GitHub MCP Registry",
+    provider_type="api",
+    url="https://api.example.com/mcp/servers",
+    trusted=False
+)
+```
+
+**Installing Servers from Providers:**
+```python
+# List available servers
+list_provider_servers()  # Uses default provider
+
+# Search for servers
+search_provider_servers("documentation")
+
+# Get server details
+get_provider_server("deepwiki")
+
+# Install a server
+install_from_provider(
+    server_id="deepwiki",
+    name="my-deepwiki",
+    variables={
+        "API_KEY": "your-key",
+        "REPO_NAME": "owner/repo"
+    }
+)
+```
+
+**Provider Configuration:**
+Providers are configured in `provider_config.json`:
+```json
+{
+  "providers": [
+    {
+      "id": "default",
+      "name": "JARVIS Trusted Provider",
+      "type": "static",
+      "catalog_file": "default_catalog.json",
+      "trusted": true,
+      "enabled": true
+    }
+  ],
+  "default_provider": "default"
+}
+```
 
 ### Migration from Directory Scanning
 

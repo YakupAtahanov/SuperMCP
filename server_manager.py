@@ -13,12 +13,13 @@ import logging
 logger = logging.getLogger("SuperMCP.server_manager")
 
 
-def connect_sse_server(url: str) -> Dict[str, Any]:
+def connect_sse_server(url: str, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
     Test connection to an SSE server.
     
     Args:
         url: SSE endpoint URL (e.g., "http://example.com:8000/sse")
+        env: Optional environment variables to pass as HTTP headers
     
     Returns:
         Dict with connection status and info
@@ -33,9 +34,17 @@ def connect_sse_server(url: str) -> Dict[str, Any]:
                 "error": f"Invalid URL format: {url}. Must start with http:// or https://"
             }
         
+        # Prepare headers from environment variables
+        headers = {}
+        if env:
+            # Convert env vars to HTTP headers (X-MCP-{VAR_NAME} format)
+            for key, value in env.items():
+                header_name = f"X-MCP-{key.upper().replace('_', '-')}"
+                headers[header_name] = value
+        
         # Try to connect (HEAD request to test connectivity)
         try:
-            response = httpx.head(url, timeout=5.0, follow_redirects=True)
+            response = httpx.head(url, headers=headers, timeout=5.0, follow_redirects=True)
             return {
                 "success": True,
                 "status_code": response.status_code,

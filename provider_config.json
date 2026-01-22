@@ -1,0 +1,14 @@
+{
+  "providers": [
+    {
+      "id": "default",
+      "name": "JARVIS Trusted Provider",
+      "type": "static",
+      "catalog_file": "default_catalog.json",
+      "trusted": true,
+      "enabled": true,
+      "description": "Official trusted provider for JARVIS MCP servers (static catalog)"
+    }
+  ],
+  "default_provider": "default"
+}
