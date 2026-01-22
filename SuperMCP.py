@@ -47,15 +47,6 @@ if not SSE_AVAILABLE:
 #           "url": str | None, "path": str | None, "description": str | None, "enabled": bool }
 REGISTRY: Dict[str, Dict[str, Any]] = {}
 
-def _is_server_file(p: Path) -> bool:
-    return (
-        p.is_file()
-        and p.name == "server.py"
-    )
-
-def _python_cmd() -> str:
-    # Cross-platform python command
-    return sys.executable or "python"
 
 def _derive_name(p: Path) -> str:
     # use parent directory name as the server name
