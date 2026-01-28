@@ -22,14 +22,22 @@ except ImportError:
 import os
 log_file_path = os.path.join(os.path.dirname(__file__), 'supermcp.log')
 
+# Determine log level from environment
+# SUPERMCP_LOG_LEVEL: DEBUG, INFO, WARNING, ERROR (default: INFO)
+# SUPERMCP_DEBUG: If set, enables DEBUG level and stderr output
+log_level_str = os.environ.get('SUPERMCP_LOG_LEVEL', 'INFO').upper()
+log_level = getattr(logging, log_level_str, logging.INFO)
+if os.environ.get('SUPERMCP_DEBUG'):
+    log_level = logging.DEBUG
+
 # Only log to file, never to stderr (unless debugging)
 log_handlers = [logging.FileHandler(log_file_path)]
 if os.environ.get('SUPERMCP_DEBUG'):
     log_handlers.append(logging.StreamHandler())
 
 logging.basicConfig(
-    level=logging.WARNING,  # Only warnings and errors, not info
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=log_level,
+    format='%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s',
     handlers=log_handlers
 )
 logger = logging.getLogger("SuperMCP")
@@ -39,9 +47,15 @@ MCPS_DIR = HERE / ".mcps"
 MCP_CONFIG_PATH = HERE / "mcp.json"
 
 mcp = FastMCP("SuperMCP")
-logger.info("SuperMCP initialized with MCPS_DIR: %s, MCP_CONFIG_PATH: %s", MCPS_DIR, MCP_CONFIG_PATH)
+logger.info("=" * 60)
+logger.info("SuperMCP INITIALIZATION")
+logger.info("=" * 60)
+logger.info("MCPS_DIR: %s", MCPS_DIR)
+logger.info("MCP_CONFIG_PATH: %s", MCP_CONFIG_PATH)
+logger.info("Log level: %s", logging.getLevelName(logger.getEffectiveLevel()))
+logger.info("SSE client available: %s", SSE_AVAILABLE)
 if not SSE_AVAILABLE:
-    logger.debug("SSE client not available in MCP SDK, will use httpx if needed")
+    logger.warning("SSE client not available in MCP SDK - will use httpx fallback for SSE servers")
 
 # name -> { "type": "stdio" | "sse", "command": str | None, "args": List[str] | None, 
 #           "url": str | None, "path": str | None, "description": str | None, "enabled": bool }
@@ -55,7 +69,7 @@ def _derive_name(p: Path) -> str:
 def _detect_server_type(server_config: Dict[str, Any]) -> str:
     """
     Detect server type from configuration.
-    
+
     Rules:
     - If only 'url' present and no 'command'/'args' -> SSE
     - If 'command'/'args' present -> stdio (even if 'url' exists for Git cloning)
@@ -63,91 +77,111 @@ def _detect_server_type(server_config: Dict[str, Any]) -> str:
     has_url = "url" in server_config and server_config["url"]
     has_command = "command" in server_config and server_config["command"]
     has_args = "args" in server_config and server_config["args"]
-    
+
+    logger.debug("[TYPE_DETECTION] Analyzing server config: has_url=%s, has_command=%s, has_args=%s",
+                 has_url, has_command, has_args)
+
     # Explicit type override
     if "type" in server_config:
-        return server_config["type"]
-    
+        detected_type = server_config["type"]
+        logger.debug("[TYPE_DETECTION] Explicit type specified: %s", detected_type)
+        return detected_type
+
     # Auto-detect: if command/args present, it's stdio
     if has_command and has_args:
+        logger.debug("[TYPE_DETECTION] Auto-detected type: stdio (command/args present)")
         return "stdio"
-    
+
     # If only URL present, it's SSE
     if has_url and not (has_command or has_args):
+        logger.debug("[TYPE_DETECTION] Auto-detected type: sse (only URL present)")
         return "sse"
-    
+
     # Default to stdio if unclear (backward compatibility)
+    logger.debug("[TYPE_DETECTION] Defaulting to stdio (backward compatibility)")
     return "stdio"
 
 def _load_mcp_config() -> Dict[str, Any]:
     """
     Load MCP server configuration from mcp.json.
-    
+
     Returns:
         Dict with mcpServers configuration
     """
+    logger.debug("[CONFIG_LOAD] Loading MCP configuration from: %s", MCP_CONFIG_PATH)
+
     if not MCP_CONFIG_PATH.exists():
-        logger.warning("mcp.json not found, creating empty configuration")
+        logger.warning("[CONFIG_LOAD] mcp.json not found at %s, creating empty configuration", MCP_CONFIG_PATH)
         empty_config = {"mcpServers": {}}
         try:
             with open(MCP_CONFIG_PATH, 'w') as f:
                 json.dump(empty_config, f, indent=2)
-            logger.info("Created empty mcp.json at %s", MCP_CONFIG_PATH)
+            logger.info("[CONFIG_LOAD] Created empty mcp.json at %s", MCP_CONFIG_PATH)
         except Exception as e:
-            logger.error("Failed to create mcp.json: %s", e)
+            logger.error("[CONFIG_LOAD] Failed to create mcp.json: %s", e)
         return empty_config
-    
+
     try:
+        logger.debug("[CONFIG_LOAD] Reading mcp.json file...")
         with open(MCP_CONFIG_PATH, 'r') as f:
             config = json.load(f)
-        
+
         if "mcpServers" not in config:
-            logger.warning("mcp.json missing 'mcpServers' key, using empty dict")
+            logger.warning("[CONFIG_LOAD] mcp.json missing 'mcpServers' key, using empty dict")
             config["mcpServers"] = {}
-        
+
+        server_count = len(config.get("mcpServers", {}))
+        logger.debug("[CONFIG_LOAD] Successfully loaded config with %d server(s): %s",
+                     server_count, list(config.get("mcpServers", {}).keys()))
         return config
     except json.JSONDecodeError as e:
-        logger.error("Invalid JSON in mcp.json: %s", e)
+        logger.error("[CONFIG_LOAD] Invalid JSON in mcp.json at line %d, column %d: %s", e.lineno, e.colno, e.msg)
         return {"mcpServers": {}}
     except Exception as e:
-        logger.error("Failed to load mcp.json: %s", e)
+        logger.error("[CONFIG_LOAD] Failed to load mcp.json: %s", e, exc_info=True)
         return {"mcpServers": {}}
 
 def _resolve_path(path_str: str) -> Path:
     """
     Resolve a path string relative to SuperMCP directory or as absolute.
-    
+
     Args:
         path_str: Path string (can be relative or absolute)
-    
+
     Returns:
         Resolved Path object
     """
     path = Path(path_str)
     if path.is_absolute():
+        logger.debug("[PATH_RESOLVE] Using absolute path: %s", path)
         return path
     # Resolve relative to SuperMCP directory
-    return HERE / path_str
+    resolved = HERE / path_str
+    logger.debug("[PATH_RESOLVE] Resolved relative path '%s' -> '%s'", path_str, resolved)
+    return resolved
 
 def _create_sse_headers(env: Optional[Dict[str, str]]) -> Dict[str, str]:
     """
     Convert environment variables to HTTP headers for SSE connections.
-    
+
     Args:
         env: Dictionary of environment variables
-    
+
     Returns:
         Dictionary of HTTP headers
     """
     if not env:
+        logger.debug("[SSE_HEADERS] No environment variables provided, returning empty headers")
         return {}
-    
+
     headers = {}
     for key, value in env.items():
         # Convert VAR_NAME to X-MCP-VAR-NAME format
         header_name = f"X-MCP-{key.upper().replace('_', '-')}"
         headers[header_name] = value
-    
+        logger.debug("[SSE_HEADERS] Mapped env var '%s' -> header '%s'", key, header_name)
+
+    logger.debug("[SSE_HEADERS] Created %d header(s) from environment variables", len(headers))
     return headers
 
 def _mask_env_values(env: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
@@ -168,33 +202,50 @@ def _scan_available():
     """
     Load MCP servers from mcp.json configuration file.
     """
-    logger.info("Loading MCP servers from mcp.json")
+    logger.info("=" * 60)
+    logger.info("[REGISTRY_SCAN] Starting server registry scan")
+    logger.info("=" * 60)
+
+    previous_count = len(REGISTRY)
     REGISTRY.clear()
-    
+    logger.debug("[REGISTRY_SCAN] Cleared previous registry (had %d servers)", previous_count)
+
     # Load configuration
     config = _load_mcp_config()
     servers = config.get("mcpServers", {})
-    
+
     if not servers:
-        logger.warning("No servers found in mcp.json")
+        logger.warning("[REGISTRY_SCAN] No servers found in mcp.json configuration")
         return
-    
+
+    logger.info("[REGISTRY_SCAN] Found %d server configuration(s) to process", len(servers))
     found_count = 0
+    skipped_count = 0
+    error_count = 0
+
     for name, server_config in servers.items():
+        logger.debug("[REGISTRY_SCAN] Processing server '%s'...", name)
+        logger.debug("[REGISTRY_SCAN] Server '%s' config: %s", name,
+                     {k: v for k, v in server_config.items() if k != 'env'})
+
         # Skip disabled servers
         if not server_config.get("enabled", True):
-            logger.debug("Skipping disabled server: %s", name)
+            logger.info("[REGISTRY_SCAN] Skipping disabled server: %s", name)
+            skipped_count += 1
             continue
-        
+
         # Detect server type
         server_type = _detect_server_type(server_config)
-        
+        logger.debug("[REGISTRY_SCAN] Server '%s' detected type: %s", name, server_type)
+
         # Validate required fields based on type
         if server_type == "sse":
             if "url" not in server_config or not server_config["url"]:
-                logger.error("SSE server '%s' missing required 'url' field", name)
+                logger.error("[REGISTRY_SCAN] SSE server '%s' missing required 'url' field", name)
+                error_count += 1
                 continue
-            
+
+            env_info = _mask_env_values(server_config.get("env"))
             REGISTRY[name] = {
                 "type": "sse",
                 "url": server_config["url"],
@@ -205,59 +256,75 @@ def _scan_available():
                 "enabled": True,
                 "env": server_config.get("env")
             }
-            logger.info("Registered SSE server: %s at %s", name, server_config["url"])
+            logger.info("[REGISTRY_SCAN] ✓ Registered SSE server: %s", name)
+            logger.debug("[REGISTRY_SCAN] SSE server '%s' URL: %s, env_vars: %s",
+                        name, server_config["url"], env_info)
             found_count += 1
-            
+
         elif server_type == "stdio":
             if "command" not in server_config or not server_config["command"]:
-                logger.error("Stdio server '%s' missing required 'command' field", name)
+                logger.error("[REGISTRY_SCAN] Stdio server '%s' missing required 'command' field", name)
+                error_count += 1
                 continue
             if "args" not in server_config or not server_config["args"]:
-                logger.error("Stdio server '%s' missing required 'args' field", name)
+                logger.error("[REGISTRY_SCAN] Stdio server '%s' missing required 'args' field", name)
+                error_count += 1
                 continue
-            
+
             # Handle Git-based servers
             if "url" in server_config and server_config["url"]:
+                logger.debug("[REGISTRY_SCAN] Server '%s' is Git-based (URL: %s)", name, server_config["url"])
                 # This is a Git-based stdio server
                 # Import server_manager here to avoid circular imports
                 from server_manager import clone_git_repo, install_dependencies
-                
+
                 # Determine target directory
                 git_target = MCPS_DIR / "remote" / name
-                
+                logger.debug("[REGISTRY_SCAN] Git target directory: %s", git_target)
+
                 # Clone if needed
                 if not git_target.exists():
                     try:
-                        logger.info("Cloning Git repository for server '%s'", name)
+                        logger.info("[REGISTRY_SCAN] Cloning Git repository for server '%s'...", name)
                         clone_git_repo(server_config["url"], git_target)
-                        # Optionally install dependencies
+                        logger.info("[REGISTRY_SCAN] Installing dependencies for '%s'...", name)
                         install_dependencies(git_target)
                     except Exception as e:
-                        logger.error("Failed to clone Git repository for '%s': %s", name, e)
+                        logger.error("[REGISTRY_SCAN] Failed to clone Git repository for '%s': %s", name, e, exc_info=True)
+                        error_count += 1
                         continue
-                
+                else:
+                    logger.debug("[REGISTRY_SCAN] Git repository already exists at %s", git_target)
+
                 # Resolve entry point path
                 entry_point = server_config["args"][0] if server_config["args"] else None
                 if entry_point:
                     entry_path = _resolve_path(entry_point)
                     if not entry_path.exists():
-                        logger.error("Entry point not found for '%s': %s", name, entry_path)
+                        logger.error("[REGISTRY_SCAN] Entry point not found for '%s': %s", name, entry_path)
+                        error_count += 1
                         continue
+                    logger.debug("[REGISTRY_SCAN] Entry point resolved: %s", entry_path)
                 else:
-                    logger.error("No entry point specified for Git-based server '%s'", name)
+                    logger.error("[REGISTRY_SCAN] No entry point specified for Git-based server '%s'", name)
+                    error_count += 1
                     continue
             else:
+                logger.debug("[REGISTRY_SCAN] Server '%s' is local stdio server", name)
                 # Local stdio server - resolve path
                 entry_point = server_config["args"][0] if server_config["args"] else None
                 if entry_point:
                     entry_path = _resolve_path(entry_point)
                     if not entry_path.exists():
-                        logger.error("Entry point not found for '%s': %s", name, entry_path)
+                        logger.error("[REGISTRY_SCAN] Entry point not found for '%s': %s", name, entry_path)
+                        error_count += 1
                         continue
+                    logger.debug("[REGISTRY_SCAN] Entry point resolved: %s", entry_path)
                 else:
-                    logger.error("No entry point specified for server '%s'", name)
+                    logger.error("[REGISTRY_SCAN] No entry point specified for server '%s'", name)
+                    error_count += 1
                     continue
-            
+
             REGISTRY[name] = {
                 "type": "stdio",
                 "command": server_config["command"],
@@ -267,40 +334,53 @@ def _scan_available():
                 "description": server_config.get("description"),
                 "enabled": True
             }
-            logger.info("Registered stdio server: %s", name)
+            logger.info("[REGISTRY_SCAN] ✓ Registered stdio server: %s (command: %s)",
+                       name, server_config["command"])
             found_count += 1
         else:
-            logger.error("Unknown server type '%s' for server '%s'", server_type, name)
+            logger.error("[REGISTRY_SCAN] Unknown server type '%s' for server '%s'", server_type, name)
+            error_count += 1
             continue
-    
-    logger.info("Load complete. Found %d MCP server(s): %s", found_count, list(REGISTRY.keys()))
+
+    logger.info("=" * 60)
+    logger.info("[REGISTRY_SCAN] Scan complete - Summary:")
+    logger.info("[REGISTRY_SCAN]   Registered: %d server(s)", found_count)
+    logger.info("[REGISTRY_SCAN]   Skipped (disabled): %d server(s)", skipped_count)
+    logger.info("[REGISTRY_SCAN]   Errors: %d server(s)", error_count)
+    logger.info("[REGISTRY_SCAN]   Active servers: %s", list(REGISTRY.keys()))
+    logger.info("=" * 60)
 
 async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Inspect a server's capabilities.
-    
+
     Supports both stdio and SSE transport types.
     """
     server_type = server_config.get("type", "stdio")
-    
+    logger.debug("[INSPECT] Starting inspection for server type: %s", server_type)
+
     if server_type == "sse":
         # SSE server inspection
         url = server_config.get("url")
         if not url:
+            logger.error("[INSPECT] SSE server missing URL in config")
             raise ValueError("SSE server missing URL")
-        
+
         env = server_config.get("env")
         headers = _create_sse_headers(env)
         masked_env = _mask_env_values(env)
-        logger.debug("Inspecting SSE server at: %s (env: %s)", url, masked_env)
-        
+        logger.info("[INSPECT] Inspecting SSE server at: %s", url)
+        logger.debug("[INSPECT] SSE headers count: %d, env vars (masked): %s", len(headers), masked_env)
+
         try:
             # Try to use MCP SSE client if available
             if SSE_AVAILABLE:
+                logger.debug("[INSPECT] Using MCP SSE client (SSE_AVAILABLE=True)")
                 # Note: sse_client from mcp.client.sse may not support headers directly
                 # We'll need to use httpx with SSE parsing or check if sse_client supports headers
                 # For now, try with httpx if headers are needed
                 if headers:
+                    logger.debug("[INSPECT] SSE server requires headers, using httpx with EventSource")
                     import httpx
                     from httpx_sse import EventSource
                     # Use httpx with SSE support when headers are needed
@@ -310,9 +390,11 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
                             # This is a simplified approach - may need adjustment based on MCP SSE spec
                             async for event in event_source:
                                 if event.event == "message":
+                                    logger.debug("[INSPECT] Received SSE message event")
                                     # Parse MCP messages
                                     pass
                             # Fallback to basic inspection
+                            logger.info("[INSPECT] SSE inspection with headers completed (limited capability)")
                             return {
                                 "tools": [],
                                 "prompts": [],
@@ -320,9 +402,12 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
                                 "note": "SSE inspection with headers - full inspection may require direct MCP client support"
                             }
                 else:
+                    logger.debug("[INSPECT] No headers required, using standard MCP SSE client")
                     # Use MCP SSE client when no headers needed
                     async with sse_client(url) as session:
+                        logger.debug("[INSPECT] SSE client connected, initializing session...")
                         await session.initialize()
+                        logger.debug("[INSPECT] Session initialized, listing capabilities...")
                         tools = await session.list_tools()
                         prompts = await session.list_prompts()
                         resources = await session.list_resources()
@@ -331,14 +416,20 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
                             "prompts": [p.name for p in getattr(prompts, "prompts", [])],
                             "resources": [r.uri for r in getattr(resources, "resources", [])],
                         }
-                        logger.info("SSE inspection successful: %d tools, %d prompts, %d resources",
+                        logger.info("[INSPECT] SSE inspection successful: %d tools, %d prompts, %d resources",
                                    len(result["tools"]), len(result["prompts"]), len(result["resources"]))
+                        logger.debug("[INSPECT] Tools: %s", result["tools"])
+                        logger.debug("[INSPECT] Prompts: %s", result["prompts"])
+                        logger.debug("[INSPECT] Resources: %s", result["resources"])
                         return result
             else:
                 # Fallback: use httpx for basic connection test
+                logger.warning("[INSPECT] SSE client not available, falling back to httpx connection test")
                 import httpx
                 async with httpx.AsyncClient() as client:
+                    logger.debug("[INSPECT] Sending GET request to %s...", url)
                     response = await client.get(url, headers=headers, timeout=5.0)
+                    logger.info("[INSPECT] Connection test completed with status: %d", response.status_code)
                     return {
                         "tools": [],
                         "prompts": [],
@@ -347,23 +438,27 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
                         "status_code": response.status_code
                     }
         except Exception as e:
-            logger.error("Failed to inspect SSE server: %s", e, exc_info=True)
+            logger.error("[INSPECT] Failed to inspect SSE server at %s: %s", url, e, exc_info=True)
             raise
-    
+
     else:
         # Stdio server inspection
         command = server_config.get("command")
         args = server_config.get("args")
         if not command or not args:
+            logger.error("[INSPECT] Stdio server missing command or args: command=%s, args=%s", command, args)
             raise ValueError("Stdio server missing command or args")
-        
-        logger.debug("Inspecting stdio server: command=%s, args=%s", command, args)
+
+        logger.info("[INSPECT] Inspecting stdio server: %s %s", command, ' '.join(args))
         try:
             params = StdioServerParameters(command=command, args=args)
+            logger.debug("[INSPECT] Created StdioServerParameters, connecting...")
             async with stdio_client(params) as (read, write):
+                logger.debug("[INSPECT] Stdio client connected, creating session...")
                 async with ClientSession(read, write) as session:
-                    logger.debug("Initializing client session for inspection")
+                    logger.debug("[INSPECT] Initializing client session...")
                     await session.initialize()
+                    logger.debug("[INSPECT] Session initialized, listing capabilities...")
                     tools = await session.list_tools()
                     prompts = await session.list_prompts()
                     resources = await session.list_resources()
@@ -372,38 +467,48 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
                         "prompts": [p.name for p in getattr(prompts, "prompts", [])],
                         "resources": [r.uri for r in getattr(resources, "resources", [])],
                     }
-                    logger.info("Stdio inspection successful: %d tools, %d prompts, %d resources",
+                    logger.info("[INSPECT] Stdio inspection successful: %d tools, %d prompts, %d resources",
                                len(result["tools"]), len(result["prompts"]), len(result["resources"]))
+                    logger.debug("[INSPECT] Tools: %s", result["tools"])
+                    logger.debug("[INSPECT] Prompts: %s", result["prompts"])
+                    logger.debug("[INSPECT] Resources: %s", result["resources"])
                     return result
         except Exception as e:
-            logger.error("Failed to inspect stdio server: %s", e, exc_info=True)
+            logger.error("[INSPECT] Failed to inspect stdio server (command=%s): %s", command, e, exc_info=True)
             raise
 
 async def _call_tool_once(server_config: Dict[str, Any], tool_name: str, arguments: dict) -> Any:
     """
     Call a tool on a server.
-    
+
     Supports both stdio and SSE transport types.
     """
     server_type = server_config.get("type", "stdio")
-    
+    logger.info("[TOOL_CALL] === Starting tool call ===")
+    logger.info("[TOOL_CALL] Tool: %s, Server type: %s", tool_name, server_type)
+    logger.debug("[TOOL_CALL] Arguments: %s", arguments)
+
     if server_type == "sse":
         # SSE server tool call
         url = server_config.get("url")
         if not url:
+            logger.error("[TOOL_CALL] SSE server missing URL")
             raise ValueError("SSE server missing URL")
-        
+
         env = server_config.get("env")
         headers = _create_sse_headers(env)
         masked_env = _mask_env_values(env)
-        logger.info("Calling tool '%s' on SSE server at %s with arguments: %s (env: %s)", 
-                   tool_name, url, arguments, masked_env)
-        
+        logger.info("[TOOL_CALL] Calling tool '%s' on SSE server: %s", tool_name, url)
+        logger.debug("[TOOL_CALL] Environment variables (masked): %s", masked_env)
+        logger.debug("[TOOL_CALL] Headers count: %d", len(headers))
+
         try:
             if SSE_AVAILABLE:
+                logger.debug("[TOOL_CALL] SSE client available")
                 # Note: sse_client may not support headers directly
                 # For now, try without headers first, then fallback to httpx if headers needed
                 if headers:
+                    logger.warning("[TOOL_CALL] SSE server requires headers - limited support")
                     # Use httpx with SSE support when headers are needed
                     import httpx
                     from httpx_sse import EventSource
@@ -413,74 +518,100 @@ async def _call_tool_once(server_config: Dict[str, Any], tool_name: str, argumen
                             # Send MCP tool call request
                             # This requires proper MCP SSE protocol implementation
                             # For now, return error indicating header support needed
+                            logger.error("[TOOL_CALL] SSE with headers not fully implemented")
                             return {
                                 "error": "SSE servers with environment variables require custom implementation. "
                                         "Headers are prepared but MCP SSE client needs enhancement for header support."
                             }
                 else:
+                    logger.debug("[TOOL_CALL] No headers needed, using standard MCP SSE client")
                     # Use standard MCP SSE client when no headers needed
                     async with sse_client(url) as session:
+                        logger.debug("[TOOL_CALL] SSE session connected, initializing...")
                         await session.initialize()
+                        logger.debug("[TOOL_CALL] Session initialized, listing available tools...")
                         tools = await session.list_tools()
                         names = [t.name for t in getattr(tools, "tools", [])]
+                        logger.debug("[TOOL_CALL] Available tools on server: %s", names)
                         if tool_name not in names:
-                            logger.warning("Tool '%s' not found. Available tools: %s", tool_name, names)
+                            logger.warning("[TOOL_CALL] Tool '%s' not found on server", tool_name)
                             return {"error": f"Tool '{tool_name}' not found. Available: {names}"}
-                        
+
+                        logger.info("[TOOL_CALL] Executing tool '%s'...", tool_name)
                         result = await session.call_tool(tool_name, arguments or {})
+                        logger.info("[TOOL_CALL] Tool '%s' executed successfully", tool_name)
                         return _extract_result_content(result)
             else:
+                logger.error("[TOOL_CALL] SSE client not available (SSE_AVAILABLE=False)")
                 return {"error": "SSE client not available. Please install MCP SDK with SSE support or use httpx."}
         except Exception as e:
-            logger.error("Failed to call tool '%s' on SSE server: %s", tool_name, e, exc_info=True)
+            logger.error("[TOOL_CALL] Failed to call tool '%s' on SSE server: %s", tool_name, e, exc_info=True)
             raise
-    
+
     else:
         # Stdio server tool call
         command = server_config.get("command")
         args = server_config.get("args")
         if not command or not args:
+            logger.error("[TOOL_CALL] Stdio server missing command or args")
             raise ValueError("Stdio server missing command or args")
-        
-        logger.info("Calling tool '%s' with arguments: %s", tool_name, arguments)
+
+        logger.info("[TOOL_CALL] Calling tool '%s' via stdio: %s %s", tool_name, command, ' '.join(args))
+        logger.debug("[TOOL_CALL] Tool arguments: %s", arguments)
         try:
             params = StdioServerParameters(command=command, args=args)
+            logger.debug("[TOOL_CALL] Created StdioServerParameters, connecting...")
             async with stdio_client(params) as (read, write):
+                logger.debug("[TOOL_CALL] Stdio client connected, creating session...")
                 async with ClientSession(read, write) as session:
-                    logger.debug("Initializing client session for tool call")
+                    logger.debug("[TOOL_CALL] Initializing client session...")
                     await session.initialize()
+                    logger.debug("[TOOL_CALL] Session initialized, verifying tool exists...")
 
                     tools = await session.list_tools()
                     names = [t.name for t in getattr(tools, "tools", [])]
+                    logger.debug("[TOOL_CALL] Available tools: %s", names)
                     if tool_name not in names:
-                        logger.warning("Tool '%s' not found. Available tools: %s", tool_name, names)
+                        logger.warning("[TOOL_CALL] Tool '%s' not found. Available: %s", tool_name, names)
                         return {"error": f"Tool '{tool_name}' not found. Available: {names}"}
 
-                    logger.debug("Executing tool '%s' on stdio server", tool_name)
+                    logger.info("[TOOL_CALL] Executing tool '%s'...", tool_name)
                     result = await session.call_tool(tool_name, arguments or {})
+                    logger.info("[TOOL_CALL] Tool '%s' executed successfully", tool_name)
                     return _extract_result_content(result)
         except Exception as e:
-            logger.error("Failed to call tool '%s': %s", tool_name, e, exc_info=True)
+            logger.error("[TOOL_CALL] Failed to call tool '%s': %s", tool_name, e, exc_info=True)
             raise
 
 def _extract_result_content(result) -> Any:
     """Extract content from MCP result object."""
+    logger.debug("[RESULT_EXTRACT] Extracting content from result object...")
+
     # Prefer structured content
     if getattr(result, "structuredContent", None) is not None:
-        logger.info("Tool executed successfully (structured content)")
+        logger.info("[RESULT_EXTRACT] Found structured content")
+        logger.debug("[RESULT_EXTRACT] Structured content type: %s", type(result.structuredContent))
         return result.structuredContent
 
     # Fallback to concatenated text blocks
     texts = []
-    for block in getattr(result, "content", []) or []:
+    content_blocks = getattr(result, "content", []) or []
+    logger.debug("[RESULT_EXTRACT] Processing %d content block(s)", len(content_blocks))
+
+    for i, block in enumerate(content_blocks):
         text = getattr(block, "text", None)
         if text:
             texts.append(text)
-    if texts:
-        logger.info("Tool executed successfully (text content)")
-        return "\n".join(texts)
+            logger.debug("[RESULT_EXTRACT] Block %d: text content (%d chars)", i, len(text))
+        else:
+            logger.debug("[RESULT_EXTRACT] Block %d: non-text content (type=%s)", i, type(block))
 
-    logger.info("Tool executed with no content returned")
+    if texts:
+        combined = "\n".join(texts)
+        logger.info("[RESULT_EXTRACT] Extracted text content: %d block(s), %d total chars", len(texts), len(combined))
+        return combined
+
+    logger.info("[RESULT_EXTRACT] No structured or text content found in result")
     return {"result": "ok", "note": "No structured/text content returned."}
 
 @mcp.prompt()
@@ -563,25 +694,33 @@ async def call_server_tool(name: str, tool_name: str, arguments: Optional[dict] 
 
 def _save_mcp_config(config: Dict[str, Any]) -> bool:
     """Save mcp.json configuration atomically."""
+    logger.debug("[CONFIG_SAVE] Starting atomic save of mcp.json")
+    server_count = len(config.get("mcpServers", {}))
+    logger.debug("[CONFIG_SAVE] Configuration contains %d server(s)", server_count)
+
     try:
         # Write to temp file first
         temp_path = MCP_CONFIG_PATH.with_suffix('.json.tmp')
+        logger.debug("[CONFIG_SAVE] Writing to temp file: %s", temp_path)
         with open(temp_path, 'w') as f:
             json.dump(config, f, indent=2)
-        
+        logger.debug("[CONFIG_SAVE] Temp file written successfully")
+
         # Atomic rename
+        logger.debug("[CONFIG_SAVE] Performing atomic rename: %s -> %s", temp_path, MCP_CONFIG_PATH)
         temp_path.replace(MCP_CONFIG_PATH)
-        logger.info("Successfully saved mcp.json")
+        logger.info("[CONFIG_SAVE] Successfully saved mcp.json (%d servers)", server_count)
         return True
     except Exception as e:
-        logger.error("Failed to save mcp.json: %s", e, exc_info=True)
+        logger.error("[CONFIG_SAVE] Failed to save mcp.json: %s", e, exc_info=True)
         # Clean up temp file if it exists
         temp_path = MCP_CONFIG_PATH.with_suffix('.json.tmp')
         if temp_path.exists():
             try:
+                logger.debug("[CONFIG_SAVE] Cleaning up temp file: %s", temp_path)
                 temp_path.unlink()
-            except:
-                pass
+            except Exception as cleanup_err:
+                logger.warning("[CONFIG_SAVE] Failed to clean up temp file: %s", cleanup_err)
         return False
 
 @mcp.tool()
