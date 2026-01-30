@@ -17,23 +17,26 @@ except ImportError:
     pass  # Will log after logger is initialized
 
 # Configure logging
-# Note: MCP servers use stdio protocol - stderr logging MUST be minimal/disabled
-# to avoid corrupting protocol messages. Log only to file by default.
+# Logs go to both file and stderr (terminal) by default for real-time debugging.
+# MCP protocol uses stdin/stdout, so stderr is safe for logging.
+#
+# Environment variables:
+#   SUPERMCP_LOG_LEVEL: DEBUG, INFO, WARNING, ERROR (default: INFO)
+#   SUPERMCP_DEBUG: If set, forces DEBUG level
+#   SUPERMCP_LOG_FILE_ONLY: If set, disables stderr output (file only)
 import os
 log_file_path = os.path.join(os.path.dirname(__file__), 'supermcp.log')
 
 # Determine log level from environment
-# SUPERMCP_LOG_LEVEL: DEBUG, INFO, WARNING, ERROR (default: INFO)
-# SUPERMCP_DEBUG: If set, enables DEBUG level and stderr output
 log_level_str = os.environ.get('SUPERMCP_LOG_LEVEL', 'INFO').upper()
 log_level = getattr(logging, log_level_str, logging.INFO)
 if os.environ.get('SUPERMCP_DEBUG'):
     log_level = logging.DEBUG
 
-# Only log to file, never to stderr (unless debugging)
+# Log to both file and stderr by default (stderr is safe - MCP uses stdin/stdout)
 log_handlers = [logging.FileHandler(log_file_path)]
-if os.environ.get('SUPERMCP_DEBUG'):
-    log_handlers.append(logging.StreamHandler())
+if not os.environ.get('SUPERMCP_LOG_FILE_ONLY'):
+    log_handlers.append(logging.StreamHandler(sys.stderr))
 
 logging.basicConfig(
     level=log_level,
