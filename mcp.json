@@ -6,34 +6,6 @@
       "type": "stdio",
       "description": "Local stdio server for shell command execution",
       "enabled": true
-    },
-    "CodeGenMCP": {
-      "command": "python",
-      "args": [".mcps/CodeGenMCP/server.py"],
-      "type": "stdio",
-      "description": "Local stdio server for MCP code generation",
-      "enabled": true
-    },
-    "CodeAnalysisMCP": {
-      "command": "python",
-      "args": [".mcps/CodeAnalysisMCP/server.py"],
-      "type": "stdio",
-      "description": "Local stdio server for code analysis",
-      "enabled": true
-    },
-    "EchoMCP": {
-      "command": "python",
-      "args": [".mcps/EchoMCP/server.py"],
-      "type": "stdio",
-      "description": "Local stdio server for testing and validation",
-      "enabled": true
-    },
-    "FileSystemMCP": {
-      "command": "python",
-      "args": [".mcps/FileSystemMCP/server.py"],
-      "type": "stdio",
-      "description": "Local stdio server for file system operations",
-      "enabled": true
     }
   }
 }

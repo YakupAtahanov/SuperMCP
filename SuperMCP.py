@@ -43,9 +43,209 @@ logger.info("SuperMCP initialized with MCPS_DIR: %s, MCP_CONFIG_PATH: %s", MCPS_
 if not SSE_AVAILABLE:
     logger.debug("SSE client not available in MCP SDK, will use httpx if needed")
 
-# name -> { "type": "stdio" | "sse", "command": str | None, "args": List[str] | None, 
+# name -> { "type": "stdio" | "sse", "command": str | None, "args": List[str] | None,
 #           "url": str | None, "path": str | None, "description": str | None, "enabled": bool }
 REGISTRY: Dict[str, Dict[str, Any]] = {}
+
+
+# =============================================================================
+# Persistent Sub-Server Cache
+# =============================================================================
+# Keeps the last used stdio server running for faster repeated calls.
+# When switching to a different server, the old one is disconnected.
+
+class CachedSubServer:
+    """Holds a persistent connection to a sub-server (like ShellMCP)"""
+
+    def __init__(self, name: str, process: 'subprocess.Popen', tools: List[str]):
+        self.name = name
+        self.process = process
+        self.tools = tools
+        self._request_id = 0
+
+    def is_alive(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def next_id(self) -> int:
+        self._request_id += 1
+        return self._request_id
+
+    def send_recv(self, request: dict) -> Optional[dict]:
+        """Send a request and receive response"""
+        if not self.is_alive():
+            return None
+        try:
+            msg = json.dumps(request) + "\n"
+            self.process.stdin.write(msg.encode())
+            self.process.stdin.flush()
+            response = self.process.stdout.readline().decode().strip()
+            if response:
+                return json.loads(response)
+        except Exception as e:
+            logger.error("CachedSubServer %s: send_recv failed: %s", self.name, e)
+        return None
+
+    def call_tool(self, tool_name: str, arguments: dict) -> Any:
+        """Call a tool on this cached server"""
+        if not self.is_alive():
+            return {"error": f"Server {self.name} is not running"}
+
+        if tool_name not in self.tools:
+            return {"error": f"Tool '{tool_name}' not found. Available: {self.tools}"}
+
+        result_resp = self.send_recv({
+            "jsonrpc": "2.0",
+            "id": self.next_id(),
+            "method": "tools/call",
+            "params": {
+                "name": tool_name,
+                "arguments": arguments or {}
+            }
+        })
+
+        if not result_resp:
+            return {"error": "Empty response from server"}
+
+        if "error" in result_resp:
+            return {"error": result_resp["error"]}
+
+        return result_resp.get("result", {})
+
+    def disconnect(self):
+        """Disconnect this sub-server"""
+        if self.process:
+            logger.info("Disconnecting cached sub-server: %s", self.name)
+            try:
+                self.process.stdin.close()
+                self.process.terminate()
+                self.process.wait(timeout=2)
+            except:
+                try:
+                    self.process.kill()
+                except:
+                    pass
+            self.process = None
+
+
+# Global cache for the last used sub-server
+_cached_subserver: Optional[CachedSubServer] = None
+
+
+def _get_or_create_cached_subserver(server_name: str, command: str, args: List[str]) -> Optional[CachedSubServer]:
+    """
+    Get a cached sub-server connection, or create a new one.
+
+    If switching to a different server, the old one is disconnected first.
+    """
+    global _cached_subserver
+
+    # Check if we already have this server cached and alive
+    if _cached_subserver is not None:
+        if _cached_subserver.name == server_name and _cached_subserver.is_alive():
+            logger.debug("Reusing cached sub-server: %s", server_name)
+            return _cached_subserver
+        else:
+            # Different server or dead process - disconnect old one
+            if _cached_subserver.name != server_name:
+                logger.info("Switching sub-server: %s -> %s", _cached_subserver.name, server_name)
+            else:
+                logger.info("Sub-server %s died, reconnecting...", server_name)
+            _cached_subserver.disconnect()
+            _cached_subserver = None
+
+    # Create new connection
+    logger.info("Starting cached sub-server: %s", server_name)
+
+    try:
+        import subprocess
+
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        process = subprocess.Popen(
+            [command] + args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+            cwd=str(HERE),
+            creationflags=creationflags
+        )
+
+        # Helper for init sequence
+        req_id = [0]
+        def next_id():
+            req_id[0] += 1
+            return req_id[0]
+
+        def send_recv(request):
+            msg = json.dumps(request) + "\n"
+            process.stdin.write(msg.encode())
+            process.stdin.flush()
+            response = process.stdout.readline().decode().strip()
+            if response:
+                return json.loads(response)
+            return None
+
+        # Initialize
+        init_resp = send_recv({
+            "jsonrpc": "2.0",
+            "id": next_id(),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "SuperMCP", "version": "1.0"}
+            }
+        })
+
+        if not init_resp or "error" in init_resp:
+            raise RuntimeError(f"Failed to initialize: {init_resp}")
+
+        # Send initialized notification
+        process.stdin.write((json.dumps({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }) + "\n").encode())
+        process.stdin.flush()
+
+        # List tools
+        tools_resp = send_recv({
+            "jsonrpc": "2.0",
+            "id": next_id(),
+            "method": "tools/list"
+        })
+
+        available_tools = []
+        if tools_resp and "result" in tools_resp:
+            available_tools = [t["name"] for t in tools_resp["result"].get("tools", [])]
+
+        # Create cached server object
+        cached = CachedSubServer(server_name, process, available_tools)
+        cached._request_id = req_id[0]  # Continue from where we left off
+
+        _cached_subserver = cached
+        logger.info("Cached sub-server %s ready with %d tools", server_name, len(available_tools))
+
+        return cached
+
+    except Exception as e:
+        logger.error("Failed to start cached sub-server %s: %s", server_name, e)
+        return None
+
+
+def _disconnect_cached_subserver():
+    """Disconnect the cached sub-server (called on shutdown)"""
+    global _cached_subserver
+    if _cached_subserver:
+        _cached_subserver.disconnect()
+        _cached_subserver = None
+
+
+# Register cleanup on module unload (best effort)
+import atexit
+atexit.register(_disconnect_cached_subserver)
 
 
 def _derive_name(p: Path) -> str:
@@ -379,14 +579,53 @@ async def _inspect_once(server_config: Dict[str, Any]) -> Dict[str, Any]:
             logger.error("Failed to inspect stdio server: %s", e, exc_info=True)
             raise
 
-async def _call_tool_once(server_config: Dict[str, Any], tool_name: str, arguments: dict) -> Any:
+def _call_stdio_tool_cached(server_name: str, command: str, args: List[str], tool_name: str, arguments: dict) -> Any:
+    """
+    Call a tool on a stdio MCP server using a cached persistent connection.
+
+    The sub-server (e.g., ShellMCP) is kept running for fast repeated calls.
+    When switching to a different server, the old one is disconnected.
+    """
+    logger.debug("Calling tool '%s' on cached server '%s'", tool_name, server_name)
+
+    # Get or create cached connection
+    cached = _get_or_create_cached_subserver(server_name, command, args)
+    if cached is None:
+        return {"error": f"Failed to connect to server {server_name}"}
+
+    # Call the tool
+    result = cached.call_tool(tool_name, arguments or {})
+
+    # Extract content from result
+    if isinstance(result, dict):
+        if "error" in result:
+            return result
+
+        # Handle structured content
+        if "structuredContent" in result and result["structuredContent"] is not None:
+            logger.info("Tool executed successfully (structured content)")
+            return result["structuredContent"]
+
+        # Handle text content
+        content = result.get("content", [])
+        if content:
+            texts = [item.get("text", "") for item in content if isinstance(item, dict)]
+            if texts:
+                logger.info("Tool executed successfully (text content)")
+                return "\n".join(texts)
+
+    return result
+
+
+async def _call_tool_once(server_name: str, server_config: Dict[str, Any], tool_name: str, arguments: dict) -> Any:
     """
     Call a tool on a server.
-    
+
     Supports both stdio and SSE transport types.
+    For stdio servers, uses a persistent cached connection.
     """
     server_type = server_config.get("type", "stdio")
-    
+
     if server_type == "sse":
         # SSE server tool call
         url = server_config.get("url")
@@ -436,32 +675,15 @@ async def _call_tool_once(server_config: Dict[str, Any], tool_name: str, argumen
             raise
     
     else:
-        # Stdio server tool call
+        # Stdio server tool call - using direct subprocess for Windows compatibility
         command = server_config.get("command")
         args = server_config.get("args")
         if not command or not args:
             raise ValueError("Stdio server missing command or args")
-        
+
         logger.info("Calling tool '%s' with arguments: %s", tool_name, arguments)
-        try:
-            params = StdioServerParameters(command=command, args=args)
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    logger.debug("Initializing client session for tool call")
-                    await session.initialize()
-
-                    tools = await session.list_tools()
-                    names = [t.name for t in getattr(tools, "tools", [])]
-                    if tool_name not in names:
-                        logger.warning("Tool '%s' not found. Available tools: %s", tool_name, names)
-                        return {"error": f"Tool '{tool_name}' not found. Available: {names}"}
-
-                    logger.debug("Executing tool '%s' on stdio server", tool_name)
-                    result = await session.call_tool(tool_name, arguments or {})
-                    return _extract_result_content(result)
-        except Exception as e:
-            logger.error("Failed to call tool '%s': %s", tool_name, e, exc_info=True)
-            raise
+        # Use cached persistent connection for stdio servers
+        return _call_stdio_tool_cached(server_name, command, args, tool_name, arguments)
 
 def _extract_result_content(result) -> Any:
     """Extract content from MCP result object."""
@@ -557,7 +779,7 @@ async def call_server_tool(name: str, tool_name: str, arguments: Optional[dict] 
         return {"error": f"'{name}' not found. Try 'reload_servers' then 'list_servers'."}
     cfg = REGISTRY[name]
     logger.debug("Calling tool on server '%s' with config: %s", name, cfg)
-    result = await _call_tool_once(cfg, tool_name, arguments or {})
+    result = await _call_tool_once(name, cfg, tool_name, arguments or {})
     logger.info("call_server_tool completed for server '%s', tool '%s'", name, tool_name)
     return result
 
