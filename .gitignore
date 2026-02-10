@@ -27,8 +27,8 @@ wheels/
 *.log
 supermcp.log
 
-# Cache
-.provider_cache.json
+# Environment (user config)
+.env
 
 # IDE
 .vscode/

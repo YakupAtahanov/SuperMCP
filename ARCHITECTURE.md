@@ -1,179 +1,98 @@
 # SuperMCP Architecture
 
-## System Overview
+## Overview
+
+SuperMCP is a single MCP server that orchestrates many child MCP servers.
+An AI client connects to SuperMCP, and SuperMCP routes tool calls to whichever
+child server owns that tool.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        SuperMCP                                │
-│                   (Orchestration Layer)                        │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Available MCPs                              │
-│                                                                 │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐ │
-│  │  ShellMCP   │  │CodeAnalysis │  │FileSystem   │  │ EchoMCP │ │
-│  │             │  │    MCP      │  │    MCP      │  │         │ │
-│  │ • Terminal  │  │ • Code      │  │ • File      │  │ • Test  │ │
-│  │   Commands  │  │   Analysis  │  │   Ops       │  │ • Echo  │ │
-│  │ • Package   │  │ • File      │  │ • Directory │  │ • Valid │ │
-│  │   Install   │  │   Reading   │  │   Mgmt      │  │ • Temp  │ │
-│  │ • Security  │  │ • Structure │  │ • Cross-    │  │         │ │
-│  │   Controls  │  │   Analysis  │  │   Platform  │  │         │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────┐
+│  AI Client   │  (Cursor, Claude, etc.)
+└──────┬───────┘
+       │ stdio
+       ▼
+┌──────────────┐      SUPERMCP_REGISTRY         registry file
+│   SuperMCP   │ ───► (env var / .env) ───► mcpServers { … }
+└──────┬───────┘                                   │
+       │                                           ▼
+       │         ┌───────────┐  ┌───────────┐  ┌───────────┐
+       └────────►│ ServerA   │  │ ServerB   │  │ ServerC   │  …
+                 │ (stdio)   │  │ (sse)     │  │ (stdio)   │
+                 └───────────┘  └───────────┘  └───────────┘
 ```
 
-## MCP Discovery Process
+## Configuration Flow
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    SuperMCP Discovery                          │
-│                                                                 │
-│  1. Load mcp.json configuration file                           │
-│     └── Parse JSON structure                                   │
-│     └── Detect server types (SSE vs stdio)                    │
-│                                                                 │
-│  2. Process each configured server                             │
-│     └── SSE Servers: Connect directly to URL                  │
-│     └── Stdio Servers: Validate entry point                   │
-│     └── Git-based: Clone repository if needed                  │
-│                                                                 │
-│  3. Build registry of available servers                        │
-│     └── Type: "sse" or "stdio"                                │
-│     └── Connection info: URL or command/args                   │
-│     └── Dynamic management via AI tools                        │
-└─────────────────────────────────────────────────────────────────┘
-```
+1. SuperMCP checks for `SUPERMCP_REGISTRY` — first as an environment variable,
+   then in a `.env` file next to `SuperMCP.py`.
+2. The value is a path (absolute or relative) to a registry JSON file.
+3. The registry file contains a `mcpServers` object listing every child server,
+   its type, command/args or URL, etc.
+4. Relative paths inside the registry resolve from the registry file's
+   directory — so the registry and its servers can live anywhere on disk.
 
-## AI MCP Generation Workflow
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                AI MCP Generation Process                       │
-│                                                                 │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │   User      │───▶│     AI      │───▶│ SuperMCP    │        │
-│  │  Request    │    │  Analysis   │    │Orchestration│        │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-│                              │                    │            │
-│                              ▼                    ▼            │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │CodeAnalysis │    │FileSystem   │    │  ShellMCP   │        │
-│  │    MCP      │    │    MCP      │    │             │        │
-│  │ • Analyze   │    │ • Create    │    │ • Install   │        │
-│  │   Templates │    │   Directories│   │   Packages  │        │
-│  │ • Study     │    │ • Write     │    │ • Test      │        │
-│  │   Patterns  │    │   Files     │    │   Servers   │        │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-│                              │                    │            │
-│                              ▼                    ▼            │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐        │
-│  │   EchoMCP   │    │  Generated  │    │ SuperMCP    │        │
-│  │             │    │    MCP      │    │ Discovery   │        │
-│  │ • Validate  │    │   Server    │    │             │        │
-│  │ • Test      │    │             │    │ • Auto-     │        │
-│  │ • Template  │    │ • Ready to  │    │   discover  │        │
-│  │   Source    │    │   Use       │    │ • Register  │        │
-│  └─────────────┘    └─────────────┘    └─────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Directory Structure
+## File Layout
 
 ```
 SuperMCP/
-├── SuperMCP.py                 # Main orchestration server
-├── server_manager.py          # Server management utilities
-├── mcp.json                   # Server configuration file
-├── TestClient.py              # Test client
-├── pyproject.toml             # Dependencies
-├── README.md                  # Documentation
-└── .mcps/                     # Private MCP server directory
-    ├── ShellMCP/              # Terminal operations
-    │   ├── server.py
-    │   └── requirements.txt
-    ├── CodeAnalysisMCP/       # Code analysis
-    │   ├── server.py
-    │   └── requirements.txt
-    ├── FileSystemMCP/         # File operations
-    │   ├── server.py
-    │   └── file-system-mcp-server/
-    │       ├── fs_server.py
-    │       └── requirements.txt
-    ├── EchoMCP/               # Testing & validation
-    │   ├── server.py
-    │   └── requirements.txt
-    └── remote/                # Git-cloned servers
-        └── [server-name]/     # Cloned repositories
+├── SuperMCP.py          Main server — loads config, manages child servers
+├── server_manager.py    Utilities: Git clone, SSE test, dependency install
+├── .env.example         Template: SUPERMCP_REGISTRY=
+├── .env                 (gitignored) User's actual config
+├── pyproject.toml       Python dependencies
+├── README.md            Usage documentation
+└── ARCHITECTURE.md      This file
 ```
 
-## Key Features
-
-### 🔍 **Configuration-Based Discovery**
-- Loads servers from `mcp.json` configuration file
-- Supports both SSE (remote) and stdio (local) server types
-- Automatic server type detection
-- Hot reloading without restart
-
-### 🛠️ **MCP Management**
-- `list_servers` - View all configured servers from mcp.json
-- `inspect_server` - Get detailed server capabilities (supports both SSE and stdio)
-- `call_server_tool` - Execute tools from any server (supports both transports)
-- `reload_servers` - Reload servers from mcp.json
-- `add_server` - Add new servers (SSE or stdio) dynamically
-- `remove_server` - Remove servers from configuration
-- `update_server` - Update server configuration
-
-### 🌐 **Transport Support**
-- **SSE Servers**: Connect to remote servers via URL (like Cursor)
-- **Stdio Servers**: Launch local servers with command/args
-- **Git Integration**: Clone Git repositories for stdio servers
-
-### 🚀 **AI MCP Generation**
-- Complete toolkit for generating new MCP servers
-- Template-based generation using EchoMCP
-- Cross-platform file operations
-- Automated testing and validation
-
-### 🔒 **Local Operation**
-- No internet required
-- Works on Windows, macOS, Linux
-- Secure, sandboxed execution
-- Privacy-focused design
-
-## Integration with J.A.R.V.I.S.
+The registry file (wherever it lives) might look like:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        J.A.R.V.I.S.                            │
-│                    (AI Assistant System)                       │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      SuperMCP                                  │
-│                 (MCP Orchestration)                            │
-└─────────────────────┬───────────────────────────────────────────┘
-                      │
-                      ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    MCP Ecosystem                               │
-│                                                                 │
-│  • ShellMCP      - Terminal operations                         │
-│  • CodeAnalysisMCP - Code analysis                             │
-│  • FileSystemMCP - File operations                             │
-│  • EchoMCP       - Testing & validation                        │
-│  • [Generated]   - AI-created MCP servers                      │
-└─────────────────────────────────────────────────────────────────┘
+/some/path/
+├── mcp.json             Registry: { "mcpServers": { … } }
+└── .mcps/
+    ├── ShellMCP/
+    │   └── server.py
+    ├── CodeAnalysisMCP/
+    │   └── server.py
+    └── remote/           Git-cloned servers land here
+        └── weather-mcp/
+            └── server.py
 ```
 
-## Benefits
+## Transport Support
 
-- **🔄 Extensible**: Add new MCP servers without code changes
-- **🧠 AI-Ready**: Perfect foundation for AI-driven MCP generation
-- **🏠 Local**: No internet dependencies, complete privacy
-- **🌍 Cross-Platform**: Works on any operating system
-- **⚡ Fast**: Dynamic discovery and hot reloading
-- **🔒 Secure**: Sandboxed execution with approval workflows
+| Type  | How it connects | Config fields |
+|-------|-----------------|---------------|
+| stdio | Launches a local process | `command`, `args` |
+| SSE   | Connects to a remote HTTP endpoint | `url`, optional `env` |
+
+## Tools Exposed
+
+| Tool | Purpose |
+|------|---------|
+| `reload_servers` | Re-read the registry file |
+| `list_servers` | List what's currently loaded |
+| `inspect_server` | Query a server's tools / prompts / resources |
+| `call_server_tool` | Execute a tool on a child server |
+| `add_server` | Add a new entry to the registry |
+| `remove_server` | Delete an entry from the registry |
+| `update_server` | Modify an existing entry |
+
+## Key Design Decisions
+
+- **Registry lives outside SuperMCP.** This makes SuperMCP a reusable module.
+  Point it at any registry and it works — no need to copy servers into the
+  SuperMCP directory.
+
+- **Env var + `.env` fallback.** The host (Cursor, etc.) can pass
+  `SUPERMCP_REGISTRY` as an environment variable, or the developer can set it
+  in a local `.env` file. No dedicated config file format to learn.
+
+- **Cached sub-server connections.** Stdio sub-servers are kept alive between
+  calls for speed. When switching to a different server the old one is
+  disconnected.
+
+- **File-only logging.** MCP uses stdio for its protocol, so stderr output
+  would corrupt messages. Logs go to `supermcp.log` by default; set
+  `SUPERMCP_DEBUG=1` to also print to stderr.
